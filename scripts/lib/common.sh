@@ -55,7 +55,7 @@ list_running_serials() {
 find_running_emulator() {
   local serial name
   for serial in $(list_running_serials); do
-    name=$("$ADB" -s "$serial" emu avd name 2>/dev/null | head -1) || true
+    name=$("$ADB" -s "$serial" emu avd name 2>/dev/null | tr -d '\r' | head -1) || true
     [ "$name" = "$AVD_NAME" ] && { echo "$serial"; return 0; }
   done
   return 1

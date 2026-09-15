@@ -15,6 +15,44 @@ cd "$ROOT"
 KEEP_EMULATOR="${KEEP_EMULATOR:-1}"
 PKG="$PKG_DEFAULT"
 ACTIVITY="$ACTIVITY_DEFAULT"
+UI_PROBE="/tmp/emulator-yomikai-ui.xml"
+
+ui_dump() {
+  timeout 20 "$ADB" -s "$1" shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || return 1
+  "$ADB" -s "$1" pull /sdcard/ui.xml "$UI_PROBE" >/dev/null 2>&1
+}
+
+ui_find_button() {
+  python3 - "$UI_PROBE" "$1" <<'PY'
+import re, sys
+import xml.etree.ElementTree as ET
+xml, pat = sys.argv[1], sys.argv[2]
+rx = re.compile(pat, re.I)
+best = None
+for n in ET.parse(xml).getroot().iter('node'):
+    t = (n.get('text') or '')
+    if rx.search(t):
+        m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', n.get('bounds') or '')
+        if m and (best is None or n.get('clickable') == 'true'):
+            x1, y1, x2, y2 = map(int, m.groups())
+            best = ((x1 + x2) // 2, (y1 + y2) // 2)
+if best:
+    print(*best)
+PY
+}
+
+dismiss_dialogs() {
+  local serial="$1" i xy
+  for i in 1 2 3 4; do
+    ui_dump "$serial" || { sleep 2; continue; }
+    xy=$(ui_find_button 'Wait|While using the app|Allow all the time|Allow|Разрешить|Принять|OK') || { sleep 2; continue; }
+    "$ADB" -s "$serial" shell input tap $xy >/dev/null 2>&1
+    sleep 3
+    if ! "$ADB" -s "$serial" shell dumpsys activity activities 2>/dev/null | grep -qE "GrantPermissionsActivity|Application Not Responding"; then
+      return 0
+    fi
+  done
+}
 
 # --- APK: аргумент > локальный universal > авто-download последнего релиза ---
 APK="${1:-}"
@@ -90,6 +128,8 @@ fi
 echo "== Smoke-тест: запуск приложения $PKG/$ACTIVITY"
 "$ADB" -s "$SERIAL" shell am start -n "$PKG/$ACTIVITY" >/dev/null
 sleep "${SPLASH_WAIT:-10}"
+
+dismiss_dialogs "$SERIAL"
 
 PROC="$("$ADB" -s "$SERIAL" shell pidof "$PKG" 2>/dev/null | tr -d '\r')"
 if [ -n "$PROC" ]; then
