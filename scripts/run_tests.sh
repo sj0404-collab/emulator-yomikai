@@ -143,12 +143,37 @@ fi
 echo "== Активность (top):"
 "$ADB" -s "$SERIAL" shell dumpsys activity activities 2>/dev/null | grep -E "topResumedActivity|mResumedActivity" | head -2 || true
 
-echo "== Скриншот:"
+echo "== Скриншот (формат ${SCREENSHOT_FORMAT:-webp}, ширина ${SCREENSHOT_WIDTH:-540}):"
 TS="$(date +%Y%m%d_%H%M%S)"
-"$ADB" -s "$SERIAL" shell screencap -p /sdcard/yomikai.png >/dev/null
+FMT="${SCREENSHOT_FORMAT:-webp}"
+WIDTH="${SCREENSHOT_WIDTH:-540}"
+QUAL="${SCREENSHOT_QUALITY:-82}"
+RAW="/tmp/emulator-yomikai-shot-$$.png"
 mkdir -p screenshots
-"$ADB" -s "$SERIAL" pull /sdcard/yomikai.png "screenshots/yomikai_${PKG}_${TS}.png" >/dev/null 2>&1 || true
-ls -1 screenshots/yomikai_*.png 2>/dev/null | tail -3 || true
+OUT="screenshots/yomikai_${PKG}_${TS}.$FMT"
+if "$ADB" -s "$SERIAL" shell screencap -p /sdcard/yomikai.png >/dev/null 2>&1 \
+   && "$ADB" -s "$SERIAL" pull /sdcard/yomikai.png "$RAW" >/dev/null 2>&1; then
+  if python3 -c 'import PIL' >/dev/null 2>&1; then
+    python3 - "$RAW" "$OUT" "$WIDTH" "$QUAL" "$FMT" <<'PY'
+import sys
+from PIL import Image
+raw, out, width, qual, fmt = sys.argv[1:6]
+im = Image.open(raw)
+w, h = im.size
+im.thumbnail((int(width), int(int(width) * h / w)))
+if im.mode in ('RGBA', 'P', 'LA'):
+    im = im.convert('RGB')
+im.save(out, format=('JPEG' if fmt.lower() == 'jpeg' else 'WEBP'), quality=int(qual))
+PY
+  fi
+  if [ ! -f "$OUT" ]; then
+    OUT="screenshots/yomikai_${PKG}_${TS}.png"
+    cp "$RAW" "$OUT"
+  fi
+  rm -f "$RAW"
+fi
+[ -f "$OUT" ] && ls -la "$OUT"
+ls -1 screenshots/yomikai_* 2>/dev/null | tail -3 || true
 
 echo "== Fatal-логи приложения:"
 FATAL="$("$ADB" -s "$SERIAL" logcat -d 2>/dev/null | grep -E "FATAL EXCEPTION" | grep -F "$PKG" | tail -10 || true)"

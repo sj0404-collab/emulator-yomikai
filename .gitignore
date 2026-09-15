@@ -1,6 +1,9 @@
 # артефакты эмулятора и тестов
 screenshots/
 *.png
+*.webp
+*.jpg
+*.jpeg
 *.log
 *.apk
 .hub/
