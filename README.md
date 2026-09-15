@@ -6,30 +6,74 @@
 
 ## Что здесь
 
-- `scripts/setup_emulator.sh` — установка компонентов Android SDK (эмулятор,
-  системный образ), создание AVD.
-- `scripts/run_tests.sh` — запуск эмулятора, установка APK из релиза,
-  smoke-тесты (запуск, вкладки, скриншоты).
-- `scripts/install_apk.sh` — быстрая установка конкретного APK в уже
-  запущенный эмулятор.
+- `scripts/lib/common.sh` — общие настройки и хелперы (SDK, AVD-путь, KVM,
+  определение запущенного эмулятора, свободный порт, ожидание загрузки).
+- `scripts/setup_emulator.sh` — установка компонентов Android SDK и создание
+  AVD. **Идемпотентный**: повторные запуски переиспользуют установленное и
+  существующий AVD; не пересоздаёт и не удаляет AVD.
+- `scripts/download_apk.sh` — скачивание последнего universal APK yomikai.
+- `scripts/run_tests.sh` — полный smoke-тест: переиспользует уже запущенный
+  эмулятор нужного AVD или поднимает новый, устанавливает APK, выдаёт
+  runtime-разрешения (чтобы не застрять на диалоге), запускает приложение,
+  проверяет процесс, снимает скриншоты, сканирует fatal-логи.
+- `scripts/install_apk.sh` — установка конкретного APK в запущенный эмулятор.
 
 ## Как пользоваться
 
 ```bash
-# 1. Подготовить SDK и AVD (однократно)
+# 1. Подготовить SDK и AVD (однократно; при повторе переиспользует всё)
 ANDROID_HOME=/usr/local/lib/android/sdk bash scripts/setup_emulator.sh
 
-# 2. Загрузить APK из последнего релиза yomikai
-gh release download universal-v1.9.84 -R sj0404-collab/yomikai -p "*.apk"
-
-# 3. Запустить тесты
+# 2. Полный тест последней сборки (скачает последний universal APK,
+#    поднимет/переиспользует эмулятор, установит, запустит, сделает скриншот)
 ANDROID_HOME=/usr/local/lib/android/sdk bash scripts/run_tests.sh
+
+# тест конкретного APK:
+ANDROID_HOME=/usr/local/lib/android/sdk bash scripts/run_tests.sh /path/to/yomikai.apk
+
+# просто скачать последний universal APK:
+bash scripts/download_apk.sh
 ```
+
+## Улучшения (auto — ничего настраивать не нужно)
+
+- **AppKey через aapt2**: пакет и launchable-activity определяются из самого
+  APK (`app.yomihon` + `eu.kanade.tachiyomi.ui.main.MainActivity`), а не
+  захардкожены как раньше (`app.yomikai.reader` — неверно).
+- **KVM**: если у процесса нет прав на `/dev/kvm`, эмулятор запускается через
+  `sg kvm -c ...` (без ручного перелогина). Скрипт сам выбирает способ.
+- **ANDROID_AVD_HOME**: AVD ищется/создаётся в едином пути (авто-детект
+  существующего в `~/.config/.android/avd` или `~/.android/avd`), поэтому
+  эмулятор всегда находит AVD.
+- **Reuse эмулятора**: если эмулятор нашего AVD уже запущен, тест идёт в него
+  (порт определяется по `adb emu avd name`), не поднимая второй. По умолчанию
+  эмулятор остаётся работать после теста (`KEEP_EMULATOR=0` — выключить).
+- **Свободный порт**: занятый 5554 не критичен — выбирается следующий свободный
+  (5556, 5558…), все adb-вызовы идут по конкретному устройству `-s`.
+- **Runtime-разрешения**: права из APK выдаются заранее через `pm grant`,
+  первый экран не блокируется диалогом разрешений.
+- **Формативная проверка**: процесс (`pidof`), top-активность, скриншот с
+  timestamp, сканирование `FATAL EXCEPTION` в logcat; ненулевой exit code при
+  сбое.
+
+## Полезные переменные окружения
+
+| Переменная | Назначение | По умолчанию |
+|---|---|---|
+| `KEEP_EMULATOR` | 0 — выключить эмулятор после теста | 1 |
+| `YOMIKAI_TAG` | конкретный тег релиза вместо последнего | последний |
+| `YOMIKAI_REPO` | репо с релизами | `sj0404-collab/yomikai` |
+| `AVD_NAME` | имя AVD | `yomikai_test_api35` |
+| `EMULATOR_RAM` | RAM эмулятора, МБ | 2048 |
+| `EMULATOR_CORES` | ядра эмулятора | 4 |
+| `BOOT_TIMEOUT` | таймаут загрузки, сек | 600 |
+| `SPLASH_WAIT` | ожидание после `am start`, сек | 10 |
 
 ## Требования
 
 - Linux с KVM (`/dev/kvm`), или macOS c Hardware Acceleration.
-- `adb`, `sdkmanager`, `avdmanager` (из Android cmdline-tools).
+- `adb`, `sdkmanager`, `avdmanager` (из Android cmdline-tools); `sg` (util-linux)
+  если группа `kvm` недоступна процессу напрямую.
 - `gh` CLI с доступом к релизам `sj0404-collab/yomikai`.
 
 ## Почему отдельный репо
