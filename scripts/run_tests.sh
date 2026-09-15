@@ -42,16 +42,16 @@ PY
 }
 
 dismiss_dialogs() {
-  local serial="$1" i xy
+  local serial="$1" i xy top
   for i in 1 2 3 4; do
+    top=$("$ADB" -s "$serial" shell dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity || true)
+    case "$top" in *GrantPermissionsActivity*|*Application\ Not\ Responding*) ;; *) return 0 ;; esac
     ui_dump "$serial" || { sleep 2; continue; }
-    xy=$(ui_find_button 'Wait|While using the app|Allow all the time|Allow|Разрешить|Принять|OK') || { sleep 2; continue; }
+    xy=$(ui_find_button 'While using the app|Allow all the time|Allow|Разрешить|Принять|OK|Wait') || { sleep 2; continue; }
     "$ADB" -s "$serial" shell input tap $xy >/dev/null 2>&1
     sleep 3
-    if ! "$ADB" -s "$serial" shell dumpsys activity activities 2>/dev/null | grep -qE "GrantPermissionsActivity|Application Not Responding"; then
-      return 0
-    fi
   done
+  return 0
 }
 
 # --- APK: аргумент > локальный universal > авто-download последнего релиза ---
@@ -131,7 +131,7 @@ sleep "${SPLASH_WAIT:-10}"
 
 dismiss_dialogs "$SERIAL"
 
-PROC="$("$ADB" -s "$SERIAL" shell pidof "$PKG" 2>/dev/null | tr -d '\r')"
+PROC="$("$ADB" -s "$SERIAL" shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)"
 if [ -n "$PROC" ]; then
   echo "OK: процесс приложения жив (pid $PROC)"
 else
