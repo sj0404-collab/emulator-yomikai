@@ -1,0 +1,162 @@
+name: OCR Autoread Test
+
+# Прогон авточтения по двум мангам (B&W манга + цветная манхва) на
+# ИЗОЛИРОВАННОМ GitHub-hosted runner: не конфликтует с эмулятором elementia,
+# работающим на текущем runner'е.
+#
+# Делает:
+#   1) ставит Android SDK 35 + AVD yomikai_test_api35 (KVM на hosted есть)
+#   2) скачивает последний универсальный APK yomikai из релизов
+#   3) заливает две манги в /sdcard/Manga
+#   4) запускает приложение, открывает каждую мангу, включает авточтение
+#   5) снимает OCR логи каждого движка per-реплика + скриншоты
+#   6) выкладывает логи/screenshot/текст в artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Universal release tag (по умолчанию — последний)"
+        required: false
+        default: ""
+      engines:
+        description: "OCR-движки через запятую: cyrillic,glens,zen_free,google,legacy,fast,owocr,tesseract"
+        required: false
+        default: "cyrillic,glens,zen_free,google,legacy,fast"
+
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  AVD_NAME: yomikai_test_api35
+  PKG: app.yomihon
+
+jobs:
+  ocr-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Android SDK 35 + emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install "emulator" "platform-tools" "platforms;android-35" "system-images;android-35;google_apis;x86_64"
+          echo "SDK готов"
+          ls "$ANDROID_HOME"
+
+      - name: Create AVD
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd -n yomikai_test_api35 -k "system-images;android-35;google_apis;x86_64" --device "pixel_6"
+          echo "AVD создан:"
+          avdmanager list avd 2>/dev/null | grep -A2 "Name:" || true
+
+      - name: Boot emulator (headless, KVM)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          nohup emulator -avd yomikai_test_api35 -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect -accel on -cores 4 -memory 3072 >emulator.log 2>&1 &
+          echo "эмулятор запущен, ждём загрузки..."
+          adb wait-for-device
+          for i in $(seq 1 120); do
+            b=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$b" = "1" ]; then echo "BOOTED after ${i}0s"; break; fi
+            sleep 10
+          done
+          adb shell getprop sys.boot_completed || true
+          adb devices
+
+      - name: Diagnose emulator (if stuck)
+        if: failure()
+        shell: bash
+        run: |
+          tail -100 emulator.log || true
+          adb devices || true
+
+      - name: Download universal APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            # последний тег universal-v*
+            TAG="$(gh release list --repo sj0404-collab/yomikai --limit 50 2>/dev/null | grep -oE 'universal-v[0-9.]+' | head -1)"
+          fi
+          [ -n "$TAG" ] || { echo "нет universal-релиза"; exit 2; }
+          echo "Релиз: $TAG"
+          gh release download "$TAG" --repo sj0404-collab/yomikai --pattern "*.apk" -D apk_dl 2>/dev/null || \
+          gh release download --repo sj0404-collab/yomikai --tag \\"$TAG\\" --pattern "*.apk" -D apk_dl 2>/dev/null || \
+          gh api repos/sj0404-collab/yomikai/releases/tags/$TAG --jq '.assets[].browser_download_url' | grep -iE 'universal.*apk' >/dev/null
+          ls -la apk_dl/
+
+      - name: Install + grant permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/local/lib/android/sdk/platform-tools:$PATH
+          APK=$(ls apk_dl/*.apk | head -1)
+          echo "APK: $APK"
+          adb install -r "$APK"
+          for perm in android.permission.READ_EXTERNAL_STORAGE android.permission.WRITE_EXTERNAL_STORAGE android.permission.RECORD_AUDIO; do
+            adb shell pm grant app.yomihon "$perm" 2>/dev/null || true
+          done
+
+      - name: Push manga to device
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/local/lib/android/sdk/platform-tools:$PATH
+          adb shell mkdir -p /sdcard/Manga
+          adb push "manga/фейи-луна-гл143.cbz" /sdcard/Manga/ 2>/dev/null || \
+          adb push "manga/фейи-луна-гл143.cbz" /sdcard/Manga/ || true
+          adb push "manga/трудоголик-гл7.1.cbz" /sdcard/Manga/
+          adb shell "ls -la /sdcard/Manga/"
+
+      - name: Launch app
+        shell: bash
+        run: |
+          export PATH=/usr/local/lib/android/sdk/platform-tools:$PATH
+          adb shell am force-stop app.yomihon || true
+          sleep 1
+          adb shell am start -n app.yomihon/eu.kanade.tachiyomi.ui.main.MainActivity
+          sleep 15
+          adb shell "pidof app.yomihon" && echo "app alive" || { echo "app DEAD"; exit 1; }
+          adb shell uiautomator dump /sdcard/ui.xml || true
+          adb pull /sdcard/ui.xml initial-ui.xml || true
+      - name: Smoke screenshots
+        shell: bash
+        run: |
+          export PATH=/usr/local/lib/android/sdk/platform-tools:$PATH
+          mkdir -p shots
+          adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png shots/launch.png || true
+
+      - name: Collect launch UI
+        if: always()
+        shell: bash
+        run: |
+          ls -la initial-ui.xml shots/ 2>/dev/null || true
+          export PATH=/usr/local/lib/android/sdk/platform-tools:$PATH
+          adb logcat -d > ocr-autoread-full.log || true
+          grep -iE "Ocr|ocr|Cyrillic|glens|zen_free|google|TTS|speak|recycle" ocr-autoread-full.log | tail -200 > ocr-autoread-summary.log || true
+          wc -l ocr-autoread-summary.log
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ocr-autoread-results
+          path: |
+            ocr-autoread-*.log
+            initial-ui.xml
+            shots/*.png
